@@ -4,7 +4,9 @@ import numpy as np
 import pandas as pd
 import cartopy.crs as ccrs
 import geopandas as gpd
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, Point
+from shapely.ops import transform
+import os
 
 # path to the classified dataset
 ClassifiedData = r"C:\Users\allcl\OneDrive\Desktop\desktop\grad school\0. Research\SyCLoPS\dataset\SyCLoPS_classified_ERA5_1940_2024.parquet"
@@ -18,30 +20,27 @@ dfc_sub = dfc[((dfc.Short_Label=='TC') | (dfc.Short_Label=='TD')) & ~(dfc['Track
 # make a new column with YEAR only from ISOTIME
 dfc_sub["YEAR"] = pd.to_datetime(dfc_sub["ISOTIME"]).dt.year
 
-# load the basin shapefile
 polygons_dict = {}
 
-with open("tc_basins.dat", "r") as f:
+script_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(script_dir, "tc_basins.dat")
+
+with open(file_path, "r") as f:
     for line in f:
         line = line.strip()
-
-        # Skip comments
         if not line or line.startswith("#"):
             continue
 
         parts = line.split(",")
-
         basin_name = parts[0].replace('"', '')
         n_vertices = int(parts[1])
 
-        # Extract coordinates
         lon_vals = list(map(float, parts[2:2+n_vertices]))
         lat_vals = list(map(float, parts[2+n_vertices:2+2*n_vertices]))
 
         coords = list(zip(lon_vals, lat_vals))
         poly = Polygon(coords)
 
-        # Some basins have multiple polygons → store as list
         if basin_name not in polygons_dict:
             polygons_dict[basin_name] = []
         polygons_dict[basin_name].append(poly)
@@ -60,22 +59,13 @@ for name, poly_list in polygons_dict.items():
         "geometry": geom
     })
 
-basins = gpd.GeoDataFrame(basin_records, crs="EPSG:4326")
+basins = gpd.GeoDataFrame(basin_records, geometry = "geometry", crs="EPSG:4326")
 
 # fix invalid polygons
 basins["geometry"] = basins["geometry"].buffer(0)
 
 # remove empy geometries
 basins = basins[~basins.geometry.is_empty]
-
-# project to a CRS with meters for accurate area calc
-basins = basins.to_crs(epsg=3857)  # Web Mercator; units in meters
-
-# remove zero area polygons
-basins = basins[basins.geometry.area > 0]
-
-# convert back to geographic CRS if needed for plotting/spatial joins
-basins = basins.to_crs(epsg=4326)
 
 # filter points
 points = gpd.GeoDataFrame(
@@ -105,6 +95,42 @@ plt.grid(color = 'gray', linestyle = '--', linewidth = 0.6, alpha = 0.5)
 # axis labels
 plt.xlabel('Year')
 plt.ylabel('Number of TCs/TDs')
-plt.title('Number of TCs/TDs in N Atlantic from 1940-2024')
+plt.title('Number of TCs/TDs in North Atlantic from 1940-2024')
 
+# Plot basins
+ax = basins.plot(edgecolor='black', alpha=0.5, figsize=(12, 8))
+points.plot(ax=ax, color='blue', markersize=10)
+
+# Add basin labels
+for idx, row in basins.iterrows():
+    geom = row.geometry
+    name = row["basin name"]
+    
+    # For MultiPolygon, use the largest polygon
+    if geom.geom_type == "MultiPolygon":
+        largest_poly = max(geom.geoms, key=lambda p: p.area)
+        centroid = largest_poly.centroid
+    else:
+        centroid = geom.centroid
+    
+    ax.text(
+        centroid.x,
+        centroid.y,
+        name,
+        horizontalalignment='center',
+        fontsize=10,
+        fontweight='bold',
+        color='white'
+    )
+
+# axis limits
+ax.set_xlim(0, 360)
+ax.set_ylim(-90, 90)
+
+ax.set_xticks(range(0, 361, 60))
+ax.set_yticks(range(-90, 91, 30))
+
+plt.title("TC Basins Layered with SyCLoPS Data Points")
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
 plt.show()
