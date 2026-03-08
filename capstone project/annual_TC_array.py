@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.ops import transform
+import seaborn as sns
 
 # path to the dataset
 ClassifiedData = r"C:\Users\allcl\OneDrive\Desktop\desktop\grad school\0. Research\SyCLoPS\dataset\SyCLoPS_classified_ERA5_1940_2024.parquet"
@@ -63,85 +64,134 @@ basins["geometry"] = basins["geometry"].buffer(0)
 # remove empy geometries
 basins = basins[~basins.geometry.is_empty]
 
-# filter points
+# read in tc_subbasins_NAtl file
+sub_polygons_dict = {}
+
+with open(r"capstone project\tc_subbasins_NAtl.dat", "r") as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split(",")
+        sub_basin_name = parts[0].replace('"', '')
+        n_vertices = int(parts[1])
+
+        lon_vals = list(map(float, parts[2:2+n_vertices]))
+        lat_vals = list(map(float, parts[2+n_vertices:2+2*n_vertices]))
+
+        coords = list(zip(lon_vals, lat_vals))
+        poly = Polygon(coords)
+
+        if sub_basin_name not in sub_polygons_dict:
+            sub_polygons_dict[sub_basin_name] = []
+        sub_polygons_dict[sub_basin_name].append(poly)
+
+# Convert to GeoDataFrame
+sub_basin_records = []
+
+for name, poly_list in sub_polygons_dict.items():
+    if len(poly_list) == 1:
+        geom = poly_list[0]
+    else:
+        geom = MultiPolygon(poly_list)
+
+    sub_basin_records.append({
+        "sub_basin_name": name,
+        "geometry": geom
+    })
+
+sub_basins = gpd.GeoDataFrame(sub_basin_records, crs="EPSG:4326",geometry="geometry")
+
+# fix invalid polygons
+sub_basins["geometry"] = sub_basins["geometry"].buffer(0)
+
+# remove empty geometries
+sub_basins = sub_basins[~sub_basins.geometry.is_empty]
+
+# filter points to North Atlantic only and add subbasin assignments to points
 points = gpd.GeoDataFrame(
     dfc_sub, 
     geometry = gpd.points_from_xy(dfc_sub.LON, dfc_sub.LAT),
     crs = "EPSG:4326"
 )
 
-filtered = gpd.sjoin(
+# filter to north atlantic basin
+n_atl = basins[basins["basin name"] == "N Atlantic"]
+
+# filter to only points inside of North Atlantic basin
+points_natl = gpd.sjoin(
     points,
-    basins[basins["basin name"] == "NE Pacific"],
-    how = "inner",
-    predicate = "within"
+    n_atl,
+    predicate="within",
+    how="inner"
+)
+points_natl = points_natl.drop(columns=["index_right"])
+
+# assign each point to its correct subbasin
+points_natl_sub = gpd.sjoin(
+    points_natl,
+    sub_basins,
+    predicate="within",
+    how="left"
 )
 
-# set index to ISOTIME column by year
-filtered = filtered.set_index("ISOTIME")
-#dfc_sub['YEAR'] = dfc_sub.index.year
+# aggregate TC counts by year
+counts = (
+    points_natl_sub
+    .groupby(["YEAR", "sub_basin_name"])
+    .size()
+    .reset_index(name="count")
+)
 
-# create 4deg bins
-filtered['lat_bin'] = 4 * np.floor(filtered["LAT"] / 4)
-filtered['lon_bin'] = 4 * np.floor(filtered["LON"] / 4)
+# correlation matrix between sub-basins
+pivot = counts.pivot(
+    index="YEAR",
+    columns="sub_basin_name",
+    values="count"
+).fillna(0)
 
-# convert lon to -180-180 from 0-360
-filtered['lon_bin'] = ((filtered['lon_bin'] + 180) % 360) - 180
+corr_matrix = pivot.corr()
+print(corr_matrix)
 
-# calc number TCs per bin
-annual_TC_counts = filtered.groupby(["YEAR", "lat_bin", "lon_bin"]).size().reset_index(name="n_cyclones")
+# plot correlation matrix
+plt.figure(figsize=(10,8))
 
-# pivot to get format: rows = year, columns = grid cells
-wide_counts = annual_TC_counts.pivot(index="YEAR", columns=["lat_bin", "lon_bin"], values="n_cyclones").fillna(0)
-
-# optional: compute climatological mean for each grid cell
-cell_mean = wide_counts.mean(axis=0)
-
-# subtract each cell's own mean (compute anomalies)
-wide_counts_anom = wide_counts - cell_mean
-
-# unstack MultiIndex to get lat/lon as separate dims
-wide_counts_anom = wide_counts_anom.unstack()
-
-# give the DataArray a name (required for NetCDF variable name)
-wide_counts_anom.name = "n_cyclone_anomaly"
-
-# convert to xarray DataArray
-ds = wide_counts_anom.to_xarray()
-
-# rename dimensions
-ds = ds.rename({"YEAR": "time", "lat_bin": "lat", "lon_bin": "lon"})
-
-# convert time to datetime
-ds["time"] = pd.to_datetime(ds["time"].values, format="%Y")
-
-# save to NetCDF
-#ds.to_netcdf("annual_tc_counts_NAtlantic_4deg.nc")
+sns.heatmap(
+    corr_matrix,
+    annot=True,
+    cmap="coolwarm",
+    vmin=-1,
+    vmax=1
+)
 
 
-## sense checks
-# Convert to xarray DataArray if needed
-#da = ds  # already a DataArray
-
-# Compute mean over time
-#cell_means = da.mean(dim="time")
-#print(cell_means)
+plt.title("North Atlantic TC Count Correlation By Sub-Basin")
+plt.tight_layout()
+plt.savefig("./capstone project/NAtlantic_sub_basins_correlation_matrix.png")
+plt.show()
 
 
-#print("Overall min:", da.min().values)
-#print("Overall max:", da.max().values)
-#print("Overall mean:", da.mean().values)
 
 
-#lat_test = da.lat.values[3]
-#lon_test = da.lon.values[3]
-#print(da.sel(lat=lat_test, lon=lon_test).values)
 
-# Average over all years to see spatial pattern (should be ~0)
-#da.mean(dim="time").plot()
-#plt.title("Mean anomaly per grid cell (should be ~0)")
-#plt.show()
-# Pick a single year to see spatial anomalies
-#da.sel(time="2000-01-01").plot()
-#plt.title("Cyclone anomaly in 2000")
-#plt.show()
+
+# longitude conversion
+#import shapely.ops
+#def shift_lon(geom):
+#    return shapely.ops.transform(
+#        lambda x, y: (((x + 180) % 360) - 180, y),
+#        geom
+#    )
+
+# shift lon
+#sub_basins["geometry"] = sub_basins["geometry"].apply(shift_lon)
+
+
+
+
+
+
+
+
+
