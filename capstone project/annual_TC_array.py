@@ -6,6 +6,9 @@ import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.ops import transform
 import seaborn as sns
+import shapely.ops
+import cartopy.crs as ccrs
+import matplotlib.patheffects as pe
 
 # path to the dataset
 ClassifiedData = r"C:\Users\allcl\OneDrive\Desktop\desktop\grad school\0. Research\SyCLoPS\dataset\SyCLoPS_classified_ERA5_1940_2024.parquet"
@@ -109,7 +112,7 @@ sub_basins["geometry"] = sub_basins["geometry"].buffer(0)
 # remove empty geometries
 sub_basins = sub_basins[~sub_basins.geometry.is_empty]
 
-# filter points to North Atlantic only and add subbasin assignments to points
+# make points a geo data frame
 points = gpd.GeoDataFrame(
     dfc_sub, 
     geometry = gpd.points_from_xy(dfc_sub.LON, dfc_sub.LAT),
@@ -128,13 +131,18 @@ points_natl = gpd.sjoin(
 )
 points_natl = points_natl.drop(columns=["index_right"])
 
+# filter out Arctic and CONUS subbasin
+exclude_subbasins = ["Arctic", "Mid-latitudinal US/CA"] 
+sub_basins_filtered = sub_basins[~sub_basins["sub_basin_name"].isin(exclude_subbasins)]
+
 # assign each point to its correct subbasin
 points_natl_sub = gpd.sjoin(
     points_natl,
-    sub_basins,
+    sub_basins_filtered,
     predicate="within",
     how="left"
 )
+points_natl_sub = points_natl_sub.drop(columns=["index_right"])
 
 # aggregate TC counts by year
 counts = (
@@ -165,33 +173,77 @@ sns.heatmap(
     vmax=1
 )
 
-
 plt.title("North Atlantic TC Count Correlation By Sub-Basin")
 plt.tight_layout()
 plt.savefig("./capstone project/NAtlantic_sub_basins_correlation_matrix.png")
 plt.show()
 
+# shift longitude for next plots
+def shift_lon(geom):
+    return shapely.ops.transform(
+        lambda x, y: (((x + 180) % 360) - 180, y),
+        geom
+    )
 
+sub_basins_filtered["geometry"] = sub_basins_filtered["geometry"].apply(shift_lon)
+basins["geometry"] = basins["geometry"].apply(shift_lon)
+points_natl_sub["geometry"] = points_natl_sub["geometry"].apply(shift_lon)
 
+# plot TC points over subbasin map
+# get latitude bounds from the points
+min_lat = points_natl_sub.geometry.y.min()
+max_lat = points_natl_sub.geometry.y.max()
 
+# longitude bounds
+min_lon = points_natl_sub.geometry.x.min()
+max_lon = points_natl_sub.geometry.x.max()
 
+fig = plt.figure(figsize=(10,8))
+ax = plt.axes(projection=ccrs.PlateCarree())
 
-# longitude conversion
-#import shapely.ops
-#def shift_lon(geom):
-#    return shapely.ops.transform(
-#        lambda x, y: (((x + 180) % 360) - 180, y),
-#        geom
-#    )
+# set map extent
+ax.set_extent([min_lon-5, max_lon+5, min_lat-5, max_lat+2], crs=ccrs.PlateCarree())
 
-# shift lon
-#sub_basins["geometry"] = sub_basins["geometry"].apply(shift_lon)
+# coastlines
+ax.coastlines(resolution="50m", linewidth=1)
 
+# plot subbasin boundaries only
+sub_basins_filtered.boundary.plot(
+    ax=ax,
+    color="black",
+    linewidth=1,
+    transform=ccrs.PlateCarree()
+)
 
+# plot TC points
+points_natl_sub.plot(
+    ax=ax,
+    color="lightblue",
+    markersize=1.5,
+    alpha=0.6,
+    transform=ccrs.PlateCarree()
+)
 
+# add labels for each subbasin
+for idx, row in sub_basins_filtered.iterrows():
+    label_point = row.geometry.representative_point()
 
+    ax.text(
+        label_point.x,
+        label_point.y,
+        row["sub_basin_name"],
+        transform=ccrs.PlateCarree(),
+        fontsize=9,
+        fontweight="bold",
+        ha="center",
+        color="black",
+        path_effects=[pe.withStroke(linewidth=3, foreground="white")]
+    )
 
+plt.title("TCs Points per North Atlantic Sub-Basins")
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
 
-
-
-
+plt.tight_layout()
+plt.savefig("./capstone project/NAtlantic_TC_count_sub_basins.png")
+plt.show()

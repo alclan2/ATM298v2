@@ -1,0 +1,7 @@
+# Ignore all NetCDF files
+netcdf_files/
+
+# Optional: ignore other common temporary or system files
+*.pyc
+__pycache__/
+.DS_Store
