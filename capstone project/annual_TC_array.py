@@ -72,7 +72,7 @@ points = gpd.GeoDataFrame(
 
 filtered = gpd.sjoin(
     points,
-    basins[basins["basin name"] == "N Atlantic"],
+    basins[basins["basin name"] == "NE Pacific"],
     how = "inner",
     predicate = "within"
 )
@@ -91,87 +91,57 @@ filtered['lon_bin'] = ((filtered['lon_bin'] + 180) % 360) - 180
 # calc number TCs per bin
 annual_TC_counts = filtered.groupby(["YEAR", "lat_bin", "lon_bin"]).size().reset_index(name="n_cyclones")
 
-# give each line an ID
-annual_TC_counts["cell_id"] = list(zip(annual_TC_counts["lat_bin"], annual_TC_counts["lon_bin"]))
-
 # pivot to get format: rows = year, columns = grid cells
-wide_counts = annual_TC_counts.pivot(index="YEAR", columns="cell_id", values="n_cyclones").fillna(0)
+wide_counts = annual_TC_counts.pivot(index="YEAR", columns=["lat_bin", "lon_bin"], values="n_cyclones").fillna(0)
 
-# convert to array
-arr = wide_counts.values
+# optional: compute climatological mean for each grid cell
+cell_mean = wide_counts.mean(axis=0)
 
-# save to net cdf format for region generation function
-# Get unique sorted coordinates
-years = np.sort(annual_TC_counts["YEAR"].unique())
-lats = np.sort(annual_TC_counts["lat_bin"].unique())
-lons = np.sort(annual_TC_counts["lon_bin"].unique())
+# subtract each cell's own mean (compute anomalies)
+wide_counts_anom = wide_counts - cell_mean
 
-# Create empty 3D array (year x lat x lon)
-data = np.zeros((len(years), len(lats), len(lons)))
+# unstack MultiIndex to get lat/lon as separate dims
+wide_counts_anom = wide_counts_anom.unstack()
 
-# Fill array
-for _, row in annual_TC_counts.iterrows():
-    y_idx = np.where(years == row["YEAR"])[0][0]
-    lat_idx = np.where(lats == row["lat_bin"])[0][0]
-    lon_idx = np.where(lons == row["lon_bin"])[0][0]
-    data[y_idx, lat_idx, lon_idx] = row["n_cyclones"]
+# give the DataArray a name (required for NetCDF variable name)
+wide_counts_anom.name = "n_cyclone_anomaly"
 
-# Create xarray DataArray
-da = xr.DataArray(
-    data,
-    coords={
-        "year": years,
-        "lat": lats,
-        "lon": lons
-    },
-    dims=["year", "lat", "lon"],
-    name="n_cyclones"
-)
+# convert to xarray DataArray
+ds = wide_counts_anom.to_xarray()
 
-da = da.rename({"year": "time"})
-da["time"] = pd.to_datetime(da["time"].values, format="%Y")
+# rename dimensions
+ds = ds.rename({"YEAR": "time", "lat_bin": "lat", "lon_bin": "lon"})
 
-# Convert to Dataset (recommended for NetCDF)
-ds = da.to_dataset()
+# convert time to datetime
+ds["time"] = pd.to_datetime(ds["time"].values, format="%Y")
 
-# save to netcdf file
-ds.to_netcdf("annual_tc_counts_NAtlantic_4deg.nc")
+# save to NetCDF
+#ds.to_netcdf("annual_tc_counts_NAtlantic_4deg.nc")
 
 
+## sense checks
+# Convert to xarray DataArray if needed
+#da = ds  # already a DataArray
+
+# Compute mean over time
+#cell_means = da.mean(dim="time")
+#print(cell_means)
 
 
-
-#sense check
-#ds = xr.open_dataset("annual_tc_counts_NAtlantic.nc")
-#print(ds.n_cyclones.sel(time="1990"))
-#da_1990 = ds.n_cyclones.sel(time="1990").squeeze()
-#print(da_1990)
-
-# sense check: print top 5 cells
-#N = 5 
-#flat_indices = np.argsort(arr.flatten())[::-1][:N]  # indices of top N values
-#rows, cols = np.unravel_index(flat_indices, arr.shape)
-#for r, c in zip(rows, cols):
-#    print(f"Year: {wide_counts.index[r]}, Cell (lat, lon): {wide_counts.columns[c]}, Cyclones: {arr[r, c]}")
+#print("Overall min:", da.min().values)
+#print("Overall max:", da.max().values)
+#print("Overall mean:", da.mean().values)
 
 
-# sense check: print a sample of the array
-#cells = (
-#    dfc_sub[['lat_bin', 'lon_bin']]
-#    .drop_duplicates()
-#    .sort_values(['lat_bin', 'lon_bin'])
-#    .reset_index(drop=True)
-#)
-#years = np.sort(dfc_sub["YEAR"].unique())
-#nyears, ncells = arr.shape
-#random_year_idx = np.random.choice(nyears, 3, replace=False)
-#random_cell_idx = np.random.choice(ncells, 5, replace=False)
-#sample = arr[np.ix_(random_year_idx, random_cell_idx)]
-#row_labels = years[random_year_idx]
-#col_labels = [
-#    f"({cells.loc[i,'lat_bin']}, {cells.loc[i,'lon_bin']})"
-#    for i in random_cell_idx
-#]
-#df_sample = pd.DataFrame(sample, index=row_labels, columns=col_labels)
-#print(df_sample)
+#lat_test = da.lat.values[3]
+#lon_test = da.lon.values[3]
+#print(da.sel(lat=lat_test, lon=lon_test).values)
 
+# Average over all years to see spatial pattern (should be ~0)
+#da.mean(dim="time").plot()
+#plt.title("Mean anomaly per grid cell (should be ~0)")
+#plt.show()
+# Pick a single year to see spatial anomalies
+#da.sel(time="2000-01-01").plot()
+#plt.title("Cyclone anomaly in 2000")
+#plt.show()
