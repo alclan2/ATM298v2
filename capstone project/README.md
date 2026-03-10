@@ -32,6 +32,9 @@ For the frequency analysis, after filtering the SyCLoPS dataset to include tropi
 
 For the SST analysis, the monthly mean SST anomaly was calculated for each data point after calculating the monthly climatological mean. Then the data was aggregated to each sub-basin and the sub-basin monthly mean SST anomaly was calculated. A correlation matric was then produced for the correlation between sub-basins based on SST monthly mean anomaly. 
 
+# License
+This project is licensed under the MIT License.
+
 # References
 
 [https://doi.org/10.1029/2024JD041287] Han, Y. and P.A. Ullrich (2025) "The System for Classification of Low-Pressure Systems (SyCLoPS): An all-in-one objective framework for large-scale datasets" J. Geophys. Res. Atm. 130 (1), e2024JD041287, doi: 10.1029/2024JD041287.
